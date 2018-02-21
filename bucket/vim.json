@@ -1,20 +1,24 @@
 {
     "homepage": "http://www.vim.org",
     "license": "http://vimdoc.sourceforge.net/htmldoc/uganda.html#license",
-    "version": "8.0.1203",
+    "version": "8.0.1529",
     "architecture": {
         "32bit": {
-            "url": "https://github.com/vim/vim-win32-installer/releases/download/v8.0.1203/gvim_8.0.1203_x86.zip",
-            "hash": "484843f6da3f4cfaa03363f5060a72777ebb591b3cc386056d7acb36fc9ebe43"
+            "url": "https://github.com/vim/vim-win32-installer/releases/download/v8.0.1529/gvim_8.0.1529_x86.zip",
+            "hash": "bd2484572303ceb95c73a0b21f50aff56032143835262f5486df9bd98cdb6617"
         },
         "64bit": {
-            "url": "https://github.com/vim/vim-win32-installer/releases/download/v8.0.1203/gvim_8.0.1203_x64.zip",
-            "hash": "c3b916f5b2c5ef0656c904a3e68c68f701478741f389d8bda6f4b0d16af235ea"
+            "url": "https://github.com/vim/vim-win32-installer/releases/download/v8.0.1529/gvim_8.0.1529_x64.zip",
+            "hash": "747f05972f460167b3015837d881ddcf04e0e6abc9ebcc15d32cc278323ed902"
         }
     },
     "extract_dir": "vim\\vim80",
     "bin": [
         "vim.exe",
+        [
+            "vim.exe",
+            "vi"
+        ],
         "gvim.exe"
     ],
     "post_install": "if( !(test-path ~\\.vimrc) -and !(test-path ~\\_vimrc) -and !(test-path ~\\vimfiles\\vimrc) -and !(test-path $env:VIM\\_vimrc) ) {

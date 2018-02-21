@@ -32,9 +32,11 @@ function is_admin {
 }
 
 # messages
-function abort($msg) { write-host $msg -f darkred; exit 1 }
-function error($msg) { write-host $msg -f darkred }
-function warn($msg) { write-host $msg -f darkyellow }
+function abort($msg, [int] $exit_code=1) { write-host $msg -f red; exit $exit_code }
+function error($msg) { write-host "ERROR $msg" -f darkred }
+function warn($msg) {  write-host "WARN  $msg" -f darkyellow }
+function info($msg) {  write-host "INFO  $msg" -f darkgray }
+function debug($msg) { write-host "DEBUG $msg" -f darkcyan }
 function success($msg) { write-host $msg -f darkgreen }
 
 function filesize($length) {
@@ -201,42 +203,46 @@ function shim($path, $global, $name, $arg) {
     $abs_shimdir = ensure (shimdir $global)
     if(!$name) { $name = strip_ext (fname $path) }
 
-    $shim = "$abs_shimdir\$($name.tolower()).ps1"
+    $shim = "$abs_shimdir\$($name.tolower())"
 
     # convert to relative path
     pushd $abs_shimdir
-    $relpath = resolve-path -relative $path
+    $relative_path = resolve-path -relative $path
     popd
+    $resolved_path = resolve-path $path
 
     # if $path points to another drive resolve-path prepends .\ which could break shims
-    if($relpath -match "^(.\\[\w]:).*$") {
-        write-output "`$path = `"$path`"" | out-file $shim -encoding utf8
+    if($relative_path -match "^(.\\[\w]:).*$") {
+        write-output "`$path = `"$path`"" | out-file "$shim.ps1" -encoding utf8
     } else {
-        write-output "`$path = join-path `"`$psscriptroot`" `"$relpath`"" | out-file $shim -encoding utf8
+        write-output "`$path = join-path `"`$psscriptroot`" `"$relative_path`"" | out-file "$shim.ps1" -encoding utf8
     }
 
     if($arg) {
-        write-output "`$args = '$($arg -join "', '")', `$args" | out-file $shim -encoding utf8 -append
+        write-output "`$args = '$($arg -join "', '")', `$args" | out-file "$shim.ps1" -encoding utf8 -append
     }
-    write-output 'if($myinvocation.expectingInput) { $input | & $path @args } else { & $path @args }' | out-file $shim -encoding utf8 -append
+
+    if($path -match '\.jar$') {
+        "if(`$myinvocation.expectingInput) { `$input | & java -jar `$path @args } else { & java -jar `$path @args }" | out-file "$shim.ps1" -encoding utf8 -append
+    } else {
+        "if(`$myinvocation.expectingInput) { `$input | & `$path @args } else { & `$path @args }" | out-file "$shim.ps1" -encoding utf8 -append
+    }
 
     if($path -match '\.exe$') {
         # for programs with no awareness of any shell
-        $shim_exe = "$(strip_ext($shim)).shim"
-        cp "$(versiondir 'scoop' 'current')\supporting\shimexe\shim.exe" "$(strip_ext($shim)).exe" -force
-        write-output "path = $(resolve-path $path)" | out-file $shim_exe -encoding utf8
+        cp "$(versiondir 'scoop' 'current')\supporting\shimexe\bin\shim.exe" "$shim.exe" -force
+        write-output "path = $resolved_path" | out-file "$shim.shim" -encoding utf8
         if($arg) {
-            write-output "args = $arg" | out-file $shim_exe -encoding utf8 -append
+            write-output "args = $arg" | out-file "$shim.shim" -encoding utf8 -append
         }
     } elseif($path -match '\.((bat)|(cmd))$') {
         # shim .bat, .cmd so they can be used by programs with no awareness of PSH
-        $shim_cmd = "$(strip_ext($shim)).cmd"
-        "@`"$(resolve-path $path)`" $arg %*" | out-file $shim_cmd -encoding ascii
+        "@`"$resolved_path`" $arg %*" | out-file "$shim.cmd" -encoding ascii
+
+        "#!/bin/sh`ncmd //C `"$resolved_path`" $arg `"$@`"" | out-file $shim -encoding ascii
     } elseif($path -match '\.ps1$') {
         # make ps1 accessible from cmd.exe
-        $shim_cmd = "$(strip_ext($shim)).cmd"
-
-"@echo off
+        "@echo off
 setlocal enabledelayedexpansion
 set args=%*
 :: replace problem characters in arguments
@@ -245,7 +251,12 @@ set args=%args:(=``(%
 set args=%args:)=``)%
 set invalid=`"='
 if !args! == !invalid! ( set args= )
-powershell -noprofile -ex unrestricted `"& '$(resolve-path $path)' %args%;exit `$lastexitcode`"" | out-file $shim_cmd -encoding ascii
+powershell -noprofile -ex unrestricted `"& '$resolved_path' %args%;exit `$lastexitcode`"" | out-file "$shim.cmd" -encoding ascii
+
+        "#!/bin/sh`npowershell -ex unrestricted `"$resolved_path`" $arg `"$@`"" | out-file $shim -encoding ascii
+    } elseif($path -match '\.jar$') {
+        "@java -jar `"$resolved_path`" $arg %*" | out-file "$shim.cmd" -encoding ascii
+        "#!/bin/sh`njava -jar `"$resolved_path`" $arg `"$@`"" | out-file $shim -encoding ascii
     }
 }
 
@@ -261,10 +272,14 @@ function ensure_in_path($dir, $global) {
 }
 
 function ensure_architecture($architecture_opt) {
+    if(!$architecture_opt) {
+        return default_architecture
+    }
+    $architecture_opt = $architecture_opt.ToString().ToLower()
     switch($architecture_opt) {
-        '' { return default_architecture }
-        { @('32bit','64bit') -contains $_ } { return $_ }
-        default { abort "Invalid architecture: '$architecture'."}
+        { @('64bit', '64', 'x64', 'amd64', 'x86_64', 'x86-64')  -contains $_ } { return '64bit' }
+        { @('32bit', '32', 'x86', 'i386', '386', 'i686')  -contains $_ } { return '32bit' }
+        default { throw [System.ArgumentException] "Invalid architecture: '$architecture_opt'"}
     }
 }
 
@@ -289,6 +304,7 @@ function ensure_all_installed($apps, $global) {
 }
 
 function strip_path($orig_path, $dir) {
+    if($orig_path -eq $null) { $orig_path = '' }
     $stripped = [string]::join(';', @( $orig_path.split(';') | ? { $_ -and $_ -ne $dir } ))
     return ($stripped -ne $orig_path), $stripped
 }

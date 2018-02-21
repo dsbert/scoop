@@ -30,7 +30,12 @@ function install_app($app, $architecture, $global, $suggested, $use_cache = $tru
         $check_hash = $false
     }
 
-    write-output "Installing '$app' ($version)."
+    if(!(supports_architecture $manifest $architecture)) {
+        write-host -f DarkRed "'$app' doesn't support $architecture architecture!"
+        return
+    }
+
+    write-output "Installing '$app' ($version) [$architecture]"
 
     $dir = ensure (versiondir $app $version $global)
     $original_dir = $dir # keep reference to real (not linked) directory
@@ -359,7 +364,7 @@ function dl_urls($app, $version, $manifest, $architecture, $dir, $use_cache = $t
                 try {
                     rm -r -force "$dir\_tmp" -ea stop
                 } catch [system.io.pathtoolongexception] {
-                    cmd /c "rmdir /s /q $dir\_tmp"
+                    & "$env:COMSPEC" /c "rmdir /s /q $dir\_tmp"
                 } catch [system.unauthorizedaccessexception] {
                     warn "Couldn't remove $dir\_tmp: unauthorized access."
                 }
@@ -451,14 +456,20 @@ function check_hash($file, $url, $manifest, $arch) {
 }
 
 function compute_hash($file, $algname) {
-    $alg = [system.security.cryptography.hashalgorithm]::create($algname)
-    $fs = [system.io.file]::openread($file)
     try {
-        $hexbytes = $alg.computehash($fs) | % { $_.tostring('x2') }
-        [string]::join('', $hexbytes)
+        if([bool](Get-Command -Name Get-FileHash -ErrorAction SilentlyContinue) -eq $true) {
+            return (Get-FileHash -Path $file -Algorithm $algname).Hash.ToLower()
+        } else {
+            $fs = [system.io.file]::openread($file)
+            $alg = [system.security.cryptography.hashalgorithm]::create($algname)
+            $hexbytes = $alg.computehash($fs) | % { $_.tostring('x2') }
+            return [string]::join('', $hexbytes)
+        }
+    } catch {
+        error $_.exception.message
     } finally {
-        $fs.dispose()
-        $alg.dispose()
+        if($fs) { $fs.dispose() }
+        if($alg) { $alg.dispose() }
     }
 }
 
@@ -675,7 +686,7 @@ function create_shims($manifest, $dir, $global, $arch) {
         }
         if(!(test-path $bin)) { abort "Can't shim '$target': File doesn't exist."}
 
-        shim "$dir\$target" $global $name $arg
+        shim "$dir\$target" $global $name (substitute $arg @{ '$dir' = $dir; '$original_dir' = $original_dir; '$persist_dir' = $persist_dir})
     }
 }
 
@@ -690,8 +701,10 @@ function rm_shim($name, $shimdir) {
     }
 
     # other shim types might be present
-    '.exe', '.shim', '.cmd' | % {
-        if(test-path "$shimdir\$name$_") { rm "$shimdir\$name$_" }
+    '', '.exe', '.shim', '.cmd' | % {
+        if(test-path -Path "$shimdir\$name$_" -PathType leaf) {
+            rm "$shimdir\$name$_"
+        }
     }
 }
 
@@ -733,10 +746,10 @@ function link_current($versiondir) {
     if(test-path $currentdir) {
         # remove the junction
         attrib -R /L $currentdir
-        cmd /c rmdir $currentdir
+        & "$env:COMSPEC" /c rmdir $currentdir
     }
 
-    cmd /c mklink /j $currentdir $versiondir | out-null
+    & "$env:COMSPEC" /c mklink /j $currentdir $versiondir | out-null
     attrib $currentdir +R /L
     return $currentdir
 }
@@ -757,7 +770,7 @@ function unlink_current($versiondir) {
         attrib $currentdir -R /L
 
         # remove the junction
-        cmd /c rmdir $currentdir
+        & "$env:COMSPEC" /c "rmdir $currentdir"
         return $currentdir
     }
     return $versiondir
@@ -873,7 +886,7 @@ function pre_install($manifest, $arch) {
     $pre_install = arch_specific 'pre_install' $manifest $arch
     if($pre_install) {
         write-output "Running pre-install script..."
-        iex $pre_install
+        iex (@($pre_install) -join "`r`n")
     }
 }
 
@@ -881,7 +894,7 @@ function post_install($manifest, $arch) {
     $post_install = arch_specific 'post_install' $manifest $arch
     if($post_install) {
         write-output "Running post-install script..."
-        iex $post_install
+        iex (@($post_install) -join "`r`n")
     }
 }
 
@@ -983,28 +996,34 @@ function persist_data($manifest, $original_dir, $persist_dir) {
             write-host "Persisting $source"
 
             # add base paths
-            $source = fullpath "$dir\$source"
-            $target = fullpath "$persist_dir\$target"
+            $source = New-Object System.IO.FileInfo(fullpath "$dir\$source")
+            if(!$source.Extension) {
+                $source = New-Object System.IO.DirectoryInfo($source.FullName)
+            }
+            $target = New-Object System.IO.FileInfo(fullpath "$persist_dir\$target")
+            if(!$target.Extension) {
+                $target = New-Object System.IO.DirectoryInfo($target.FullName)
+            }
 
-            if (!(test-path $target)) {
+            if (!$target.Exists) {
                 # If we do not have data in the store we move the original
-                if (test-path $source) {
+                if ($source.Exists) {
                     Move-Item $source $target
-                } else {
-                    # if there is no source we create an empty directory
-                    $target = ensure $target
+                } elseif($target.GetType() -eq [System.IO.DirectoryInfo]) {
+                    # if there is no source and it's a directory we create an empty directory
+                    ensure $target.FullName | out-null
                 }
-            } elseif (test-path $source) {
+            } elseif ($source.Exists) {
                 # (re)move original (keep a copy)
                 Move-Item $source "$source.original"
             }
 
             # create link
             if (is_directory $target) {
-                cmd /c "mklink /j `"$source`" `"$target`"" | out-null
-                attrib "$source" +R /L
+                & "$env:COMSPEC" /c "mklink /j `"$source`" `"$target`"" | out-null
+                attrib $source.FullName +R /L
             } else {
-                cmd /c "mklink /h `"$source`" `"$target`"" | out-null
+                & "$env:COMSPEC" /c "mklink /h `"$source`" `"$target`"" | out-null
             }
         }
     }

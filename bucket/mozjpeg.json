@@ -16,5 +16,8 @@
     "checkver": {
         "url": "https://mozjpeg.codelove.de/binaries.html",
         "re": "version ([\\d.]+)"
+    },
+    "autoupdate": {
+        "url": "https://mozjpeg.codelove.de/bin/mozjpeg_$version_x86.zip"
     }
 }

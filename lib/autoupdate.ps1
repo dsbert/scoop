@@ -55,7 +55,7 @@ function find_hash_in_textfile([String] $url, [String] $basename, [String] $rege
 
     # find hash with filename in $hashfile (will be overridden by $regex)
     if ($hash.Length -eq 0 -and $regex.Length -eq 0) {
-        $filenameRegex = "([a-fA-F0-9]+)\s+(?:\.\/|\*)?(?:`$basename)"
+        $filenameRegex = "([a-fA-F0-9]+)\s+(?:\.\/|\*)?(?:`$basename)(\s[\d]+)?"
         $filenameRegex = substitute $filenameRegex @{'$basename' = [regex]::Escape($basename)}
         if ($hashfile -match $filenameRegex) {
             $hash = $matches[1]
@@ -117,9 +117,17 @@ function get_hash_for_app([String] $app, $config, [String] $version, [String] $u
         $hashmode = 'json'
     }
 
+    if (!$hashfile_url -and $url -match "(?:downloads\.)?sourceforge.net\/projects?\/(?<project>[^\/]+)\/(?:files\/)?(?<file>.*)") {
+        $hashmode = 'sourceforge'
+        # change the URL because downloads.sourceforge.net doesn't have checksums
+        $hashfile_url = (strip_filename (strip_fragment "https://sourceforge.net/projects/$($matches['project'])/files/$($matches['file'])")).TrimEnd('/')
+        $hash = find_hash_in_textfile $hashfile_url $basename '"$basename":.*?"sha1":\s"([a-fA-F0-9]{40})"'
+    }
+
     if ($hashmode -eq 'extract') {
         $hash = find_hash_in_textfile $hashfile_url $basename $config.find
     }
+
     if ($hashmode -eq 'json') {
         $hash = find_hash_in_json $hashfile_url $basename $config.jp
     }
@@ -196,12 +204,13 @@ function update_manifest_prop([String] $prop, $json, [Hashtable] $substitutions)
     }
 }
 
-function get_version_substitutions([String] $version, [Hashtable] $matches) {
+function get_version_substitutions([String] $version, [Hashtable] $customMatches) {
     $firstPart = $version.Split('-') | Select-Object -first 1
     $lastPart = $version.Split('-') | Select-Object -last 1
     $versionVariables = @{
         '$version' = $version;
         '$underscoreVersion' = ($version -replace "\.", "_");
+        '$dashVersion' = ($version -replace "\.", "-");
         '$cleanVersion' = ($version -replace "\.", "");
         '$majorVersion' = $firstPart.Split('.') | Select-Object -first 1;
         '$minorVersion' = $firstPart.Split('.') | Select-Object -skip 1 -first 1;
@@ -209,10 +218,14 @@ function get_version_substitutions([String] $version, [Hashtable] $matches) {
         '$buildVersion' = $firstPart.Split('.') | Select-Object -skip 3 -first 1;
         '$preReleaseVersion' = $lastPart;
     }
-    if($matches) {
-        $matches.GetEnumerator() | % {
+    if($version -match "(?<head>\d+\.\d+(?:\.\d+)?)(?<tail>.*)") {
+        $versionVariables.Set_Item('$matchHead', $matches['head'])
+        $versionVariables.Set_Item('$matchTail', $matches['tail'])
+    }
+    if($customMatches) {
+        $customMatches.GetEnumerator() | % {
             if($_.Name -ne "0") {
-                $versionVariables.Add('$match' + (Get-Culture).TextInfo.ToTitleCase($_.Name), $_.Value)
+                $versionVariables.Set_Item('$match' + (Get-Culture).TextInfo.ToTitleCase($_.Name), $_.Value)
             }
         }
     }
